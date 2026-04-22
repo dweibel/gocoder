@@ -1,0 +1,46 @@
+# Kiro
+.kiro/
+
+# Documentation (local reference only)
+docs/
+
+# Environment
+.env
+
+
+# Go binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/agent
+/coding-agent
+
+# Go test binary
+*.test
+
+# Go coverage
+*.out
+coverage.html
+
+# Go build cache
+/vendor/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+*.tar
+/tmp/
+
+# Rapid test failure reproductions
+agent/testdata/rapid/**/*.fail
