@@ -1,9 +1,11 @@
 module github.com/ardp/coding-agent
 
-go 1.25.8
+go 1.25.0
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.27.1
+	gopkg.in/yaml.v3 v3.0.1
+	modernc.org/sqlite v1.49.1
 	pgregory.net/rapid v1.2.0
 )
 
@@ -19,9 +21,7 @@ require (
 	github.com/tidwall/sjson v1.2.5 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/libc v1.72.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.49.1 // indirect
 )
