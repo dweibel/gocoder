@@ -43,7 +43,19 @@ jobs:
           DEPLOY_DIR: ~/deploy/gocoder
         run: |
           echo "Testing SSH connection to $SSH_TARGET..."
-          ssh $SSH_OPTS $SSH_TARGET echo "Connection successful"
+          # Retry logic with exponential backoff
+          for attempt in 1 2 3; do
+            if ssh $SSH_OPTS $SSH_TARGET echo "Connection successful"; then
+              break
+            fi
+            if [ $attempt -lt 3 ]; then
+              echo "Connection attempt $attempt failed, retrying in 10 seconds..."
+              sleep 10
+            else
+              echo "Failed to connect after 3 attempts"
+              exit 1
+            fi
+          done
 
           # Package source (exclude .git and test artifacts)
           tar czf /tmp/gocoder-src.tar.gz --exclude='.git' --exclude='*.tar' .
