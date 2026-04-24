@@ -36,11 +36,15 @@ jobs:
           ssh-keyscan -H ${{ secrets.OCI_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
 
       - name: Deploy source and rebuild on OCI
+        timeout-minutes: 30
         env:
-          SSH_OPTS: -i ~/.ssh/oci_deploy -o StrictHostKeyChecking=no -o ConnectTimeout=30
+          SSH_OPTS: -i ~/.ssh/oci_deploy -o StrictHostKeyChecking=no -o ConnectTimeout=30 -v
           SSH_TARGET: opc@${{ secrets.OCI_HOST }}
           DEPLOY_DIR: ~/deploy/gocoder
         run: |
+          echo "Testing SSH connection to $SSH_TARGET..."
+          ssh $SSH_OPTS $SSH_TARGET echo "Connection successful"
+
           # Package source (exclude .git and test artifacts)
           tar czf /tmp/gocoder-src.tar.gz --exclude='.git' --exclude='*.tar' .
 
