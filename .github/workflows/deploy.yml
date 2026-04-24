@@ -48,9 +48,10 @@ jobs:
             --secret OPENROUTER_BASE_URL,type=env \
             --secret OPENROUTER_MAX_TOKENS,type=env \
             --secret OPENROUTER_TIMEOUT,type=env \
+            --secret ELICITATION_MODEL,type=env \
             -v ~/deploy/gocoder/projects/ardp/workspace:/workspace:Z \
             -p 8080:8080 \
-            gocoder:latest gocoder
+            gocoder:latest gocoder-server
 
       - name: Verify health
         run: |
