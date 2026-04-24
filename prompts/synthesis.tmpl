@@ -1,0 +1,47 @@
+You are a requirements synthesis engine. Your task is to analyze the following elicitation conversation and produce structured Agile artifacts.
+
+Review the complete conversation history below, then generate the following artifacts using the EXACT delimited format specified.
+
+## Conversation History
+
+{{range .Messages}}### {{.Role}} ({{.SentAt.Format "2006-01-02T15:04:05Z07:00"}})
+{{.Content}}
+
+{{end}}
+
+## Output Format
+
+You MUST produce your output using these exact delimiters. Do not add any text outside the delimited sections.
+
+===BRD===
+Write a Business Requirements Document covering:
+- Business objectives and goals
+- Stakeholders and their needs
+- Success criteria and KPIs
+- Scope and constraints
+===END_BRD===
+
+===SRS===
+Write a Software Requirements Specification covering:
+- Functional requirements
+- System behavior and interactions
+- Data requirements
+- Interface requirements
+===END_SRS===
+
+===NFR===
+Write Non-Functional Requirements covering:
+- Performance requirements
+- Security requirements
+- Reliability and availability
+- Scalability considerations
+===END_NFR===
+
+===GHERKIN===
+Write one or more user stories in Gherkin format. Each story MUST start with "### Story:" followed by a descriptive title, then Given/When/Then steps:
+
+### Story: [Descriptive Title]
+Given [precondition]
+When [action]
+Then [expected result]
+===END_GHERKIN===

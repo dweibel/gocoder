@@ -1,0 +1,21 @@
+{{define "title"}}Artifacts — ARDP Elicitation{{end}}
+{{define "content"}}
+<div class="artifacts-page">
+    <div class="artifacts-header">
+        <h1>Project Artifacts</h1>
+        <a href="/api/projects/{{.ProjectID}}/export" class="btn btn-export">Export All</a>
+    </div>
+    {{if .Artifacts}}
+    <div class="artifact-groups">
+        {{range .Artifacts}}
+        <div class="artifact-card" data-type="{{.ArtifactType}}">
+            <h2>{{.ArtifactType}}</h2>
+            <div class="artifact-content">{{.Content}}</div>
+        </div>
+        {{end}}
+    </div>
+    {{else}}
+    <p class="empty-state">No artifacts have been synthesized yet.</p>
+    {{end}}
+</div>
+{{end}}

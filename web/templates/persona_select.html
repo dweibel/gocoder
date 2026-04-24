@@ -1,0 +1,19 @@
+{{define "title"}}Select Persona — ARDP Elicitation{{end}}
+{{define "content"}}
+<div class="persona-select">
+    <h1>Choose Your Persona</h1>
+    <p class="subtitle">Select an AI persona to interrogate your feature proposal.</p>
+    <div class="persona-cards">
+        {{range .Personas}}
+        <div class="persona-card">
+            <h2>{{.Name}}</h2>
+            <p>{{.Description}}</p>
+            <form method="POST" action="/api/sessions">
+                <input type="hidden" name="persona" value="{{.ID}}">
+                <button type="submit" class="btn btn-primary">Select</button>
+            </form>
+        </div>
+        {{end}}
+    </div>
+</div>
+{{end}}

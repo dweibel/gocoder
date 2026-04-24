@@ -385,6 +385,11 @@ start_container() {
     # Image
     run_cmd+=" ${IMAGE_NAME}:latest"
 
+    # Server mode: override CMD to run the server binary
+    if [[ "$mode" == "server" ]]; then
+        run_cmd+=" gocoder"
+    fi
+
     # Start the container via SSH
     echo "Starting container '${container_name}' (mode=${mode})..."
     local tmp_run="/tmp/start_container_run.txt"

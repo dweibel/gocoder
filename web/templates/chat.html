@@ -1,0 +1,21 @@
+{{define "title"}}Chat — ARDP Elicitation{{end}}
+{{define "content"}}
+<div class="chat-page" data-session-id="{{.SessionID}}">
+    <div class="chat-header">
+        <h1>Elicitation Session</h1>
+        <span class="persona-badge">{{.Persona}}</span>
+    </div>
+    <div class="message-list" id="message-list">
+        {{range .Messages}}
+        <chat-message role="{{.Role}}" content="{{.Content}}"></chat-message>
+        {{end}}
+    </div>
+    <loading-indicator></loading-indicator>
+    <chat-input session-id="{{.SessionID}}"></chat-input>
+    <div class="chat-actions">
+        <form method="POST" action="/api/sessions/{{.SessionID}}/synthesize">
+            <button type="submit" class="btn btn-synthesis">Synthesize Artifacts</button>
+        </form>
+    </div>
+</div>
+{{end}}
