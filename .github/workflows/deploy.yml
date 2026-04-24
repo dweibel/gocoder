@@ -7,11 +7,20 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gocoder
+    env:
+      GONOSUMCHECK: github.com/ardp/coding-agent
+      GONOSUMDB: github.com/ardp/coding-agent
+      GOFLAGS: -mod=mod
+      GOPRIVATE: github.com/ardp/coding-agent
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: 'stable'
+          cache: false
       - run: go build ./...
       - run: go vet ./...
       - run: go test ./agent/... ./elicitation/... ./store/... ./web/... -count=1
