@@ -42,8 +42,10 @@ func TestChatTemplateRendersWithData(t *testing.T) {
 	tmpls := loadTestTemplateMap(t)
 
 	data := ChatPageData{
-		SessionID: "sess-abc",
-		Persona:   "socratic_business_analyst",
+		SessionID:   "sess-abc",
+		SessionName: "Test Session",
+		Persona:     "socratic_business_analyst",
+		PersonaName: "Socratic Business Analyst",
 		Messages: []elicitation.ChatMessage{
 			{Role: "user", Content: "Hello", SentAt: time.Now()},
 			{Role: "assistant", Content: "Hi there", SentAt: time.Now()},
@@ -62,7 +64,8 @@ func TestChatTemplateRendersWithData(t *testing.T) {
 		"<html",
 		"<nav",
 		"sess-abc",
-		"socratic_business_analyst",
+		"Socratic Business Analyst",
+		"Test Session",
 		"<chat-input",
 		"<loading-indicator",
 		"<chat-message",

@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/ardp/coding-agent/elicitation"
 	"github.com/ardp/coding-agent/store"
@@ -26,9 +28,17 @@ type Handler struct {
 
 // ChatPageData holds data for rendering the chat template.
 type ChatPageData struct {
-	SessionID string
-	Persona   string
-	Messages  []elicitation.ChatMessage
+	SessionID   string
+	SessionName string
+	Persona     string
+	PersonaName string
+	Messages    []elicitation.ChatMessage
+	AllPersonas []PersonaOption
+}
+
+// LandingPageData holds data for rendering the landing page template.
+type LandingPageData struct {
+	Sessions []elicitation.SessionSummary
 }
 
 // PersonaOption describes a persona choice for the selection UI.
@@ -91,7 +101,7 @@ func (h *Handler) SetTemplates(tmpls map[string]*template.Template) {
 // directory, returning a map suitable for SetTemplates.
 func ParseTemplates(dir string) (map[string]*template.Template, error) {
 	layoutFile := filepath.Join(dir, "layout.html")
-	pages := []string{"chat.html", "persona_select.html", "artifacts.html"}
+	pages := []string{"chat.html", "persona_select.html", "artifacts.html", "landing.html"}
 
 	tmpls := make(map[string]*template.Template, len(pages))
 	for _, page := range pages {
@@ -145,8 +155,7 @@ func (h *Handler) HandleNewSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if persona == "" {
-		jsonError(w, "missing required field: persona", http.StatusBadRequest)
-		return
+		persona = string(elicitation.PersonaTrustedAdv)
 	}
 
 	sess := h.sessions.Create(elicitation.PersonaType(persona))
@@ -367,9 +376,12 @@ func (h *Handler) HandleChatPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := ChatPageData{
-		SessionID: sess.ID,
-		Persona:   string(sess.Persona),
-		Messages:  sess.Messages,
+		SessionID:   sess.ID,
+		SessionName: sess.Name,
+		Persona:     string(sess.Persona),
+		PersonaName: sess.Persona.DisplayName(),
+		Messages:    sess.Messages,
+		AllPersonas: defaultPersonas,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -421,4 +433,124 @@ func (h *Handler) HandleArtifactsPage(w http.ResponseWriter, r *http.Request) {
 	if err := h.tmpls["artifacts.html"].ExecuteTemplate(w, "layout", data); err != nil {
 		http.Error(w, "template render error: "+err.Error(), http.StatusInternalServerError)
 	}
+}
+
+
+// validPersonas is the set of accepted persona identifiers.
+var validPersonas = map[elicitation.PersonaType]bool{
+	elicitation.PersonaSocraticBA: true,
+	elicitation.PersonaHostileSA:  true,
+	elicitation.PersonaTrustedAdv: true,
+}
+
+// HandleLandingPage renders the landing page with session list.
+// GET /
+func (h *Handler) HandleLandingPage(w http.ResponseWriter, r *http.Request) {
+	if h.tmpls == nil {
+		jsonError(w, "templates not configured", http.StatusInternalServerError)
+		return
+	}
+
+	sessions := h.sessions.List()
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].CreatedAt.After(sessions[j].CreatedAt)
+	})
+
+	data := LandingPageData{
+		Sessions: sessions,
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := h.tmpls["landing.html"].ExecuteTemplate(w, "layout", data); err != nil {
+		http.Error(w, "template render error: "+err.Error(), http.StatusInternalServerError)
+	}
+}
+
+// HandleListSessions returns all sessions as JSON.
+// GET /api/sessions
+func (h *Handler) HandleListSessions(w http.ResponseWriter, r *http.Request) {
+	sessions := h.sessions.List()
+	if sessions == nil {
+		sessions = []elicitation.SessionSummary{}
+	}
+	jsonOK(w, sessions)
+}
+
+// HandleUpdatePersona changes the active persona for a session.
+// PUT /api/sessions/{id}/persona
+// Request: {"persona": "hostile_systems_architect"}
+// Response: {"persona": "hostile_systems_architect", "display_name": "Hostile Systems Architect"}
+func (h *Handler) HandleUpdatePersona(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("id")
+
+	sess, err := h.sessions.Get(sessionID)
+	if err != nil {
+		if errors.Is(err, elicitation.ErrSessionNotFound) {
+			jsonError(w, "session not found: "+sessionID, http.StatusNotFound)
+			return
+		}
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var req struct {
+		Persona string `json:"persona"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	newPersona := elicitation.PersonaType(req.Persona)
+	if !validPersonas[newPersona] {
+		jsonError(w, "invalid persona: "+req.Persona, http.StatusBadRequest)
+		return
+	}
+
+	sess.Persona = newPersona
+	sess.Messages = append(sess.Messages, elicitation.ChatMessage{
+		Role:    "system",
+		Content: "Switched to " + newPersona.DisplayName(),
+		SentAt:  time.Now(),
+	})
+
+	jsonOK(w, map[string]string{
+		"persona":      req.Persona,
+		"display_name": newPersona.DisplayName(),
+	})
+}
+
+// HandleUpdateName changes the name of a session.
+// PUT /api/sessions/{id}/name
+// Request: {"name": "My Feature Discussion"}
+// Response: {"name": "My Feature Discussion"}
+func (h *Handler) HandleUpdateName(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("id")
+
+	sess, err := h.sessions.Get(sessionID)
+	if err != nil {
+		if errors.Is(err, elicitation.ErrSessionNotFound) {
+			jsonError(w, "session not found: "+sessionID, http.StatusNotFound)
+			return
+		}
+		jsonError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if err := elicitation.ValidateSessionName(req.Name); err != nil {
+		jsonError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	sess.Name = strings.TrimSpace(req.Name)
+
+	jsonOK(w, map[string]string{"name": sess.Name})
 }

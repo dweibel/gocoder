@@ -18,6 +18,7 @@ type ConversationMarshaler interface {
 // markdownFrontMatter represents the YAML front-matter in a conversation markdown file.
 type markdownFrontMatter struct {
 	SessionID    string `yaml:"session_id"`
+	Name         string `yaml:"name"`
 	Persona      string `yaml:"persona"`
 	CreatedAt    string `yaml:"created_at"`
 	MessageCount int    `yaml:"message_count"`
@@ -38,6 +39,7 @@ func (c *markdownCodec) Marshal(session *Session) ([]byte, error) {
 	// Write YAML front-matter
 	fm := markdownFrontMatter{
 		SessionID:    session.ID,
+		Name:         session.Name,
 		Persona:      string(session.Persona),
 		CreatedAt:    session.CreatedAt.UTC().Format(time.RFC3339),
 		MessageCount: len(session.Messages),
@@ -54,7 +56,18 @@ func (c *markdownCodec) Marshal(session *Session) ([]byte, error) {
 
 	// Write messages
 	for _, msg := range session.Messages {
-		buf.WriteString(fmt.Sprintf("\n## %s — %s\n\n", msg.Role, msg.SentAt.UTC().Format(time.RFC3339)))
+		header := msg.Role
+		if msg.Role == "assistant" {
+			// Use PersonaName for the header; fall back to PersonaDisplayNames
+			header = msg.PersonaName
+			if header == "" {
+				header = PersonaDisplayNames[session.Persona]
+				if header == "" {
+					header = "assistant"
+				}
+			}
+		}
+		buf.WriteString(fmt.Sprintf("\n## %s — %s\n\n", header, msg.SentAt.UTC().Format(time.RFC3339)))
 		buf.WriteString(msg.Content)
 		buf.WriteString("\n")
 	}
@@ -118,6 +131,11 @@ func (c *markdownCodec) Unmarshal(data []byte) (*Session, error) {
 		}
 	}
 
+	// Default name if missing
+	if fm.Name == "" {
+		fm.Name = "Untitled Session"
+	}
+
 	// Parse created_at
 	createdAt, err := time.Parse(time.RFC3339, fm.CreatedAt)
 	if err != nil {
@@ -135,6 +153,7 @@ func (c *markdownCodec) Unmarshal(data []byte) (*Session, error) {
 
 	return &Session{
 		ID:        fm.SessionID,
+		Name:      fm.Name,
 		Persona:   PersonaType(fm.Persona),
 		CreatedAt: createdAt,
 		Messages:  messages,
@@ -195,10 +214,24 @@ func parseMessages(body string) ([]ChatMessage, error) {
 			content = strings.Trim(lines[1], "\n\r")
 		}
 
+		// Determine role and persona name from header text
+		var msgRole, personaName string
+		switch role {
+		case "user":
+			msgRole = "user"
+		case "system":
+			msgRole = "system"
+		default:
+			// Any other header text is an assistant message; the header text is the persona name
+			msgRole = "assistant"
+			personaName = role
+		}
+
 		messages = append(messages, ChatMessage{
-			Role:    role,
-			Content: content,
-			SentAt:  sentAt,
+			Role:        msgRole,
+			PersonaName: personaName,
+			Content:     content,
+			SentAt:      sentAt,
 		})
 	}
 

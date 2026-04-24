@@ -53,7 +53,7 @@ func main() {
 
 	// Initialize dependencies.
 	personaLoader := elicitation.NewFilePersonaLoader(promptsDir)
-	messageCreator := agent.NewOpenRouterClient(cfg)
+	messageCreator := agent.NewMessageCreator(cfg)
 	engine := elicitation.NewEngine(messageCreator, cfg, personaLoader)
 	engine.SetPromptsDir(promptsDir)
 

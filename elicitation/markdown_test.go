@@ -56,8 +56,8 @@ func TestMarshal_ProducesValidMarkdownWithYAMLFrontMatter(t *testing.T) {
 	if !strings.Contains(md, "## user — 2025-01-15T10:30:05Z") {
 		t.Error("missing user message header")
 	}
-	if !strings.Contains(md, "## assistant — 2025-01-15T10:30:12Z") {
-		t.Error("missing assistant message header")
+	if !strings.Contains(md, "## Socratic Business Analyst — 2025-01-15T10:30:12Z") {
+		t.Error("missing assistant message header (expected persona display name)")
 	}
 
 	// Must contain message content
@@ -389,4 +389,199 @@ func TestMalformedMarkdownError(t *testing.T) {
 			// For random bytes, if it somehow parses, that's acceptable but very unlikely
 		}
 	})
+}
+
+// ============================================================================
+// Task 3.3: Property test — Markdown round-trip preserves name and persona names
+// Feature: chat-ui, Property 6: Conversation markdown round-trip preserves name and persona names
+// Validates: Requirements 6.2, 6.3, 6.4
+// ============================================================================
+
+func TestMarkdownRoundTripWithNameAndPersonaName(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		personas := []PersonaType{PersonaSocraticBA, PersonaHostileSA, PersonaTrustedAdv}
+		persona := personas[rapid.IntRange(0, 2).Draw(t, "personaIdx")]
+
+		sessionID := rapid.StringMatching(`[a-z0-9]{8,32}`).Draw(t, "sessionID")
+
+		// Generate a valid session name (1-200 chars, safe characters)
+		name := rapid.StringMatching(`[a-zA-Z][a-zA-Z0-9 ]{0,99}`).Draw(t, "sessionName")
+
+		// Generate a base time truncated to seconds
+		baseUnix := rapid.Int64Range(1700000000, 1800000000).Draw(t, "baseUnix")
+		createdAt := time.Unix(baseUnix, 0).UTC()
+
+		// Generate 0-20 messages with alternating user/assistant roles and system messages
+		numMessages := rapid.IntRange(0, 20).Draw(t, "numMessages")
+		messages := make([]ChatMessage, numMessages)
+		for i := 0; i < numMessages; i++ {
+			roleChoice := rapid.IntRange(0, 2).Draw(t, fmt.Sprintf("roleChoice_%d", i))
+			var role, personaName string
+			switch roleChoice {
+			case 0:
+				role = "user"
+			case 1:
+				role = "assistant"
+				// Generate a persona display name for assistant messages
+				personaName = PersonaDisplayNames[personas[rapid.IntRange(0, 2).Draw(t, fmt.Sprintf("msgPersonaIdx_%d", i))]]
+			case 2:
+				role = "system"
+			}
+
+			content := rapid.StringMatching(`[a-zA-Z0-9][a-zA-Z0-9 .,;:!?]{0,99}`).Draw(t, fmt.Sprintf("content_%d", i))
+			sentAt := createdAt.Add(time.Duration(i+1) * time.Second)
+			messages[i] = ChatMessage{
+				Role:        role,
+				PersonaName: personaName,
+				Content:     content,
+				SentAt:      sentAt,
+			}
+		}
+
+		original := &Session{
+			ID:        sessionID,
+			Name:      name,
+			Persona:   persona,
+			CreatedAt: createdAt,
+			Messages:  messages,
+		}
+
+		codec := NewMarkdownCodec()
+
+		// Marshal
+		data, err := codec.Marshal(original)
+		if err != nil {
+			t.Fatalf("marshal error: %v", err)
+		}
+
+		// Unmarshal
+		restored, err := codec.Unmarshal(data)
+		if err != nil {
+			t.Fatalf("unmarshal error: %v", err)
+		}
+
+		// Property: name matches
+		if restored.Name != original.Name {
+			t.Errorf("name mismatch: %q vs %q", original.Name, restored.Name)
+		}
+
+		// Property: persona matches
+		if restored.Persona != original.Persona {
+			t.Errorf("persona mismatch: %q vs %q", original.Persona, restored.Persona)
+		}
+
+		// Property: session ID matches
+		if restored.ID != original.ID {
+			t.Errorf("ID mismatch: %q vs %q", original.ID, restored.ID)
+		}
+
+		// Property: message count matches
+		if len(restored.Messages) != len(original.Messages) {
+			t.Fatalf("message count mismatch: %d vs %d", len(original.Messages), len(restored.Messages))
+		}
+
+		// Property: each message role, content, and PersonaName matches
+		for i := range original.Messages {
+			if restored.Messages[i].Role != original.Messages[i].Role {
+				t.Errorf("message[%d] role mismatch: %q vs %q", i, original.Messages[i].Role, restored.Messages[i].Role)
+			}
+			if restored.Messages[i].Content != original.Messages[i].Content {
+				t.Errorf("message[%d] content mismatch: %q vs %q", i, original.Messages[i].Content, restored.Messages[i].Content)
+			}
+			// Check PersonaName on assistant messages
+			if original.Messages[i].Role == "assistant" {
+				expectedPersonaName := original.Messages[i].PersonaName
+				if expectedPersonaName == "" {
+					// Fallback: marshal uses PersonaDisplayNames
+					expectedPersonaName = PersonaDisplayNames[original.Persona]
+				}
+				if restored.Messages[i].PersonaName != expectedPersonaName {
+					t.Errorf("message[%d] PersonaName mismatch: %q vs %q", i, expectedPersonaName, restored.Messages[i].PersonaName)
+				}
+			}
+			// Compare timestamps truncated to seconds
+			origT := original.Messages[i].SentAt.Truncate(time.Second)
+			restT := restored.Messages[i].SentAt.Truncate(time.Second)
+			if !restT.Equal(origT) {
+				t.Errorf("message[%d] SentAt mismatch: %v vs %v", i, origT, restT)
+			}
+		}
+
+		// Property: CreatedAt matches
+		origCreated := original.CreatedAt.Truncate(time.Second)
+		restCreated := restored.CreatedAt.Truncate(time.Second)
+		if !restCreated.Equal(origCreated) {
+			t.Errorf("CreatedAt mismatch: %v vs %v", origCreated, restCreated)
+		}
+	})
+}
+
+// ============================================================================
+// Task 3.4: Unit test — Backward compatibility: no name in front-matter
+// Requirements: 6.5
+// ============================================================================
+
+func TestMarkdownBackwardCompatNoName(t *testing.T) {
+	md := `---
+session_id: "legacy-session"
+persona: "trusted_advisor"
+created_at: "2025-01-15T10:30:00Z"
+message_count: 1
+---
+
+## user — 2025-01-15T10:30:05Z
+
+Hello there.
+`
+
+	codec := NewMarkdownCodec()
+	session, err := codec.Unmarshal([]byte(md))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if session.Name != "Untitled Session" {
+		t.Errorf("expected Name %q, got %q", "Untitled Session", session.Name)
+	}
+}
+
+// ============================================================================
+// Task 3.5: Unit test — Backward compatibility: assistant role headers
+// Requirements: 6.5
+// ============================================================================
+
+func TestMarkdownBackwardCompatAssistantRole(t *testing.T) {
+	md := `---
+session_id: "legacy-session"
+persona: "socratic_business_analyst"
+created_at: "2025-01-15T10:30:00Z"
+message_count: 2
+---
+
+## user — 2025-01-15T10:30:05Z
+
+I have a question.
+
+## assistant — 2025-01-15T10:30:12Z
+
+Let me help you with that.
+`
+
+	codec := NewMarkdownCodec()
+	session, err := codec.Unmarshal([]byte(md))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(session.Messages) != 2 {
+		t.Fatalf("expected 2 messages, got %d", len(session.Messages))
+	}
+
+	assistantMsg := session.Messages[1]
+	if assistantMsg.Role != "assistant" {
+		t.Errorf("expected Role %q, got %q", "assistant", assistantMsg.Role)
+	}
+	if assistantMsg.PersonaName != "assistant" {
+		t.Errorf("expected PersonaName %q, got %q", "assistant", assistantMsg.PersonaName)
+	}
 }

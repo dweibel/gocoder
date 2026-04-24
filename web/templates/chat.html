@@ -2,12 +2,27 @@
 {{define "content"}}
 <div class="chat-page" data-session-id="{{.SessionID}}">
     <div class="chat-header">
-        <h1>Elicitation Session</h1>
-        <span class="persona-badge">{{.Persona}}</span>
+        <a href="/" class="back-link">&larr; Back to Home</a>
+        <div class="chat-header-info">
+            <h1 class="session-name">
+                <span class="session-name-display" id="session-name-display" tabindex="0" role="button" title="Click to edit session name">{{.SessionName}}</span>
+                <input type="text" class="session-name-input" id="session-name-input" value="{{.SessionName}}" maxlength="200" style="display:none;" aria-label="Edit session name">
+            </h1>
+            <span class="persona-badge">{{.PersonaName}}</span>
+        </div>
+        <persona-switcher
+            data-session-id="{{.SessionID}}"
+            data-current-persona="{{.Persona}}"
+            data-personas='[{{range $i, $p := .AllPersonas}}{{if $i}},{{end}}{"id":"{{$p.ID}}","name":"{{$p.Name}}","description":"{{$p.Description}}"}{{end}}]'
+        ></persona-switcher>
     </div>
     <div class="message-list" id="message-list">
         {{range .Messages}}
+        {{if eq .Role "assistant"}}
+        <chat-message role="{{.Role}}" content="{{.Content}}" persona-name="{{.PersonaName}}"></chat-message>
+        {{else}}
         <chat-message role="{{.Role}}" content="{{.Content}}"></chat-message>
+        {{end}}
         {{end}}
     </div>
     <loading-indicator></loading-indicator>
@@ -18,4 +33,60 @@
         </form>
     </div>
 </div>
+<script>
+(function() {
+    const sessionId = '{{.SessionID}}';
+    const display = document.getElementById('session-name-display');
+    const input = document.getElementById('session-name-input');
+
+    if (!display || !input) return;
+
+    function startEdit() {
+        input.value = display.textContent.trim();
+        display.style.display = 'none';
+        input.style.display = '';
+        input.focus();
+        input.select();
+    }
+
+    function saveName() {
+        const newName = input.value.trim();
+        input.style.display = 'none';
+        display.style.display = '';
+        if (!newName || newName === display.textContent.trim()) return;
+
+        fetch('/api/sessions/' + sessionId + '/name', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name: newName})
+        }).then(function(resp) {
+            if (resp.ok) return resp.json();
+            throw new Error('Failed to update name');
+        }).then(function(data) {
+            display.textContent = data.name;
+        }).catch(function() {
+            // revert on error
+        });
+    }
+
+    display.addEventListener('click', startEdit);
+    display.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            startEdit();
+        }
+    });
+    input.addEventListener('blur', saveName);
+    input.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            saveName();
+        }
+        if (e.key === 'Escape') {
+            input.style.display = 'none';
+            display.style.display = '';
+        }
+    });
+})();
+</script>
 {{end}}

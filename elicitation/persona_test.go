@@ -170,3 +170,38 @@ func TestPersonaLoader_MissingFileReturnsError(t *testing.T) {
 		t.Fatal("expected error when template file is missing, got nil")
 	}
 }
+
+// ============================================================================
+// Task 1.7: Unit test — Persona display name mapping
+// Requirements: 5.6
+// ============================================================================
+
+func TestPersonaDisplayNameMapping(t *testing.T) {
+	// All three PersonaType constants must have entries in PersonaDisplayNames
+	allPersonas := []PersonaType{PersonaSocraticBA, PersonaHostileSA, PersonaTrustedAdv}
+	for _, p := range allPersonas {
+		if _, ok := PersonaDisplayNames[p]; !ok {
+			t.Fatalf("PersonaDisplayNames missing entry for %q", p)
+		}
+	}
+
+	// DisplayName() returns expected strings for all three
+	expected := map[PersonaType]string{
+		PersonaSocraticBA: "Socratic Business Analyst",
+		PersonaHostileSA:  "Hostile Systems Architect",
+		PersonaTrustedAdv: "Trusted Advisor",
+	}
+	for p, want := range expected {
+		got := p.DisplayName()
+		if got != want {
+			t.Fatalf("DisplayName() for %q: expected %q, got %q", p, want, got)
+		}
+	}
+
+	// Unknown persona falls back to raw string
+	unknown := PersonaType("unknown_persona")
+	got := unknown.DisplayName()
+	if got != "unknown_persona" {
+		t.Fatalf("DisplayName() for unknown persona: expected %q, got %q", "unknown_persona", got)
+	}
+}

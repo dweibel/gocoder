@@ -38,6 +38,7 @@ REQUIRED_SECRETS=(
     OPENROUTER_BASE_URL
     OPENROUTER_MAX_TOKENS
     OPENROUTER_TIMEOUT
+    ELICITATION_MODEL
 )
 
 # ---------------------------------------------------------------------------
@@ -107,22 +108,12 @@ EOF
 # Function stubs — implementations added in subsequent tasks
 # ---------------------------------------------------------------------------
 
-# Build the container image for linux/arm64, tag with git SHA + latest
-# Saves to .tar archive. Supports --skip-build to skip this phase.
+# Build the container image on the remote OCI instance (native ARM64).
+# Transfers source as a tarball, runs podman build remotely.
+# Supports --skip-build to skip this phase.
 # Requirements: 3.1, 3.2, 3.3, 3.4, 3.5
 build_image() {
     local skip_build="${1:-false}"
-
-    # Detect container engine (podman preferred over docker in WSL)
-    local engine=""
-    if command -v podman &>/dev/null; then
-        engine="podman"
-    elif command -v docker &>/dev/null; then
-        engine="docker"
-    else
-        echo "Error [build]: neither podman nor docker found" >&2
-        exit 1
-    fi
 
     # Determine version tag: git short SHA or timestamp fallback
     local version_tag
@@ -133,27 +124,10 @@ build_image() {
     fi
 
     IMAGE_TAG="$version_tag"
-    IMAGE_ARCHIVE="${IMAGE_NAME}-${version_tag}.tar"
 
-    # Skip build if requested — look for existing archive
     if [[ "$skip_build" == true ]]; then
-        if [[ -f "$IMAGE_ARCHIVE" ]]; then
-            echo "Skipping build, reusing existing archive: $IMAGE_ARCHIVE"
-            return 0
-        fi
-        # Also check for any existing archive matching the image name
-        local existing
-        existing=$(ls ${IMAGE_NAME}-*.tar 2>/dev/null | head -1 || true)
-        if [[ -n "$existing" ]]; then
-            IMAGE_ARCHIVE="$existing"
-            # Extract version tag from filename
-            IMAGE_TAG="${existing#${IMAGE_NAME}-}"
-            IMAGE_TAG="${IMAGE_TAG%.tar}"
-            echo "Skipping build, reusing existing archive: $IMAGE_ARCHIVE"
-            return 0
-        fi
-        echo "Error [build]: --skip-build specified but no existing archive found" >&2
-        exit 1
+        echo "Skipping build (--skip-build). Assuming image exists on remote."
+        return 0
     fi
 
     # Verify Containerfile exists
@@ -162,107 +136,92 @@ build_image() {
         exit 1
     fi
 
-    # Build the image for linux/arm64
-    echo "Building image ${IMAGE_NAME}:${version_tag} for linux/arm64..."
-    if ! $engine build \
-        --platform linux/arm64 \
-        --build-arg BUILD_TARGET="$BUILD_TARGET" \
-        -t "${IMAGE_NAME}:${version_tag}" \
-        -t "${IMAGE_NAME}:latest" \
-        -f Containerfile . 2>&1; then
-        echo "Error [build]: container build failed" >&2
+    # Create source tarball including working tree changes
+    local src_archive="/tmp/gocoder-src-${version_tag}.tar.gz"
+    echo "Creating source archive..."
+    tar czf "$src_archive" \
+        --exclude='.git' --exclude='*.tar' --exclude='*.tar.gz' \
+        --exclude='node_modules' --exclude='.env' --exclude='ardp.db' \
+        --transform='s,^\./,src/,' .
+
+    # Ensure remote build directory exists
+    local remote_build_dir="$DEPLOY_DIR/build"
+    echo "Ensuring remote build directory..."
+    ssh $SSH_OPTS "$SSH_TARGET" "mkdir -p $remote_build_dir $DEPLOY_DIR/logs"
+
+    # Transfer source archive
+    echo "Transferring source to $SSH_TARGET..."
+    if ! scp $SSH_OPTS "$src_archive" "$SSH_TARGET:$remote_build_dir/src.tar.gz" 2>&1; then
+        echo "Error [build]: failed to transfer source archive" >&2
         exit 1
     fi
 
-    # Save image to tar archive
-    echo "Saving image to ${IMAGE_ARCHIVE}..."
-    if ! $engine save -o "$IMAGE_ARCHIVE" "${IMAGE_NAME}:${version_tag}" "${IMAGE_NAME}:latest" 2>&1; then
-        echo "Error [build]: failed to save image archive" >&2
-        exit 1
-    fi
+    # Extract on remote
+    echo "Extracting source on remote host..."
+    ssh $SSH_OPTS "$SSH_TARGET" "rm -rf $remote_build_dir/src && tar xzf $remote_build_dir/src.tar.gz -C $remote_build_dir"
 
-    echo "Build complete: ${IMAGE_ARCHIVE}"
-}
+    # Build image remotely via nohup + log polling (can be slow)
+    local build_log="$DEPLOY_DIR/logs/build.log"
+    echo "Building image on remote host (this may take a while)..."
 
-# Transfer image archive to OCI instance via scp, load with podman load
-# Requirements: 4.1, 4.2, 4.3, 4.4, 4.5, 4.6
-transfer_image() {
-    # Verify the local archive exists
-    if [[ ! -f "$IMAGE_ARCHIVE" ]]; then
-        echo "Error [transfer]: image archive not found: $IMAGE_ARCHIVE" >&2
-        exit 1
-    fi
+    ssh $SSH_OPTS "$SSH_TARGET" "rm -f $build_log" 2>/dev/null || true
+    ssh $SSH_OPTS "$SSH_TARGET" "nohup bash -c '
+        cd $remote_build_dir/src && \
+        podman --cgroup-manager=cgroupfs build \
+            --build-arg BUILD_TARGET=$BUILD_TARGET \
+            -t ${IMAGE_NAME}:${version_tag} \
+            -t ${IMAGE_NAME}:latest \
+            -f Containerfile . > $build_log 2>&1; \
+        echo DONE >> $build_log
+    ' &>/dev/null &"
 
-    local archive_basename
-    archive_basename=$(basename "$IMAGE_ARCHIVE")
-
-    # Ensure remote deploy directory and logs directory exist
-    echo "Ensuring remote directories exist..."
-    if ! ssh $SSH_OPTS "$SSH_TARGET" "mkdir -p $DEPLOY_DIR $DEPLOY_DIR/logs" > /tmp/transfer_mkdir.txt 2>&1; then
-        cat /tmp/transfer_mkdir.txt >&2
-        echo "Error [transfer]: failed to create remote directories" >&2
-        exit 1
-    fi
-    cat /tmp/transfer_mkdir.txt
-
-    # Transfer archive via scp
-    echo "Transferring $IMAGE_ARCHIVE to $SSH_TARGET:$DEPLOY_DIR/..."
-    if ! scp $SSH_OPTS "$IMAGE_ARCHIVE" "$SSH_TARGET:$DEPLOY_DIR/" > /tmp/transfer_scp.txt 2>&1; then
-        cat /tmp/transfer_scp.txt >&2
-        echo "Error [transfer]: scp transfer failed" >&2
-        exit 1
-    fi
-    cat /tmp/transfer_scp.txt
-    echo "Transfer complete."
-
-    # Load image via podman load using nohup + log polling (ARM64 is slow)
-    echo "Loading image on remote host (this may take a while on ARM64)..."
-    local load_log="$DEPLOY_DIR/logs/load.log"
-
-    # Clear any previous load log
-    ssh $SSH_OPTS "$SSH_TARGET" "rm -f $load_log" > /dev/null 2>&1 || true
-
-    # Kick off podman load in background with nohup
-    ssh $SSH_OPTS "$SSH_TARGET" "nohup bash -c 'podman load -i $DEPLOY_DIR/$archive_basename > $load_log 2>&1; echo DONE >> $load_log' &>/dev/null &"
-
-    # Poll for completion
+    # Poll for completion (up to 15 minutes)
     local poll_result=""
-    local max_polls=120  # 10 minutes at 5-second intervals
+    local max_polls=180
     local poll_count=0
     while [[ $poll_count -lt $max_polls ]]; do
         sleep 5
-        poll_result=$(ssh $SSH_OPTS "$SSH_TARGET" "tail -1 $load_log 2>/dev/null" 2>/dev/null || true)
+        poll_result=$(ssh $SSH_OPTS "$SSH_TARGET" "tail -1 $build_log 2>/dev/null" 2>/dev/null || true)
         if [[ "$poll_result" == "DONE" ]]; then
             break
         fi
+        # Print progress dots
+        printf "."
         poll_count=$((poll_count + 1))
     done
+    echo ""
 
     if [[ "$poll_result" != "DONE" ]]; then
-        echo "Error [load]: podman load timed out or failed" >&2
-        # Retrieve load log for diagnostics
-        ssh $SSH_OPTS "$SSH_TARGET" "cat $load_log" > /tmp/transfer_load.txt 2>&1 || true
-        cat /tmp/transfer_load.txt >&2
+        echo "Error [build]: remote build timed out or failed" >&2
+        ssh $SSH_OPTS "$SSH_TARGET" "cat $build_log" > /tmp/build_output.txt 2>&1 || true
+        cat /tmp/build_output.txt >&2
         exit 1
     fi
 
-    # Retrieve and display load output (excluding the DONE marker)
-    ssh $SSH_OPTS "$SSH_TARGET" "head -n -1 $load_log" > /tmp/transfer_load.txt 2>&1
-    cat /tmp/transfer_load.txt
+    # Retrieve and display build output
+    ssh $SSH_OPTS "$SSH_TARGET" "head -n -1 $build_log" > /tmp/build_output.txt 2>&1
+    cat /tmp/build_output.txt
 
-    # Check if podman load reported an error in its output
-    if grep -qi "error" /tmp/transfer_load.txt 2>/dev/null; then
-        echo "Error [load]: podman load reported an error" >&2
-        cat /tmp/transfer_load.txt >&2
+    # Check for build errors
+    if grep -qi "^error" /tmp/build_output.txt 2>/dev/null; then
+        echo "Error [build]: remote podman build failed" >&2
         exit 1
     fi
 
-    # Remove archive from remote to conserve disk space
-    echo "Removing remote archive..."
-    ssh $SSH_OPTS "$SSH_TARGET" "rm -f $DEPLOY_DIR/$archive_basename" > /tmp/transfer_rm.txt 2>&1 || true
-    cat /tmp/transfer_rm.txt
+    # Clean up remote build directory
+    echo "Cleaning up remote build files..."
+    ssh $SSH_OPTS "$SSH_TARGET" "rm -rf $remote_build_dir" 2>/dev/null || true
 
-    echo "Image transfer and load complete."
+    # Clean up local source archive
+    rm -f "$src_archive"
+
+    echo "Remote build complete: ${IMAGE_NAME}:${version_tag}"
+}
+
+# Transfer image — no-op for remote builds (image is already on the instance).
+# Kept for interface compatibility.
+transfer_image() {
+    echo "Image already on remote host (built remotely). Skipping transfer."
 }
 
 # Verify each required podman secret exists on the OCI instance
@@ -387,7 +346,7 @@ start_container() {
 
     # Server mode: override CMD to run the server binary
     if [[ "$mode" == "server" ]]; then
-        run_cmd+=" gocoder"
+        run_cmd+=" gocoder-server"
     fi
 
     # Start the container via SSH
@@ -614,9 +573,8 @@ cmd_deploy() {
     init_ssh
 
     if [[ "$dry_run" == true ]]; then
-        echo "[dry-run] Would build image: $IMAGE_NAME (skip_build=$skip_build)"
-        echo "[dry-run] Would transfer image to $SSH_TARGET:$DEPLOY_DIR/"
-        echo "[dry-run] Would load image via podman load on $SSH_HOST"
+        echo "[dry-run] Would transfer source to $SSH_TARGET:$DEPLOY_DIR/build/"
+        echo "[dry-run] Would build image remotely via podman build on $SSH_HOST"
         echo "[dry-run] Would check secrets on $SSH_HOST"
         echo "[dry-run] Would validate deployment on $SSH_HOST"
         return 0
@@ -703,6 +661,9 @@ cmd_start() {
             run_cmd+=" -p ${port}:${port}"
         fi
         run_cmd+=" ${IMAGE_NAME}:latest"
+        if [[ "$mode" == "server" ]]; then
+            run_cmd+=" gocoder-server"
+        fi
         echo "[dry-run] Would execute on $SSH_HOST: $run_cmd"
         return 0
     fi

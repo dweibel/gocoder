@@ -1,0 +1,27 @@
+{{define "title"}}Sessions — ARDP Elicitation{{end}}
+{{define "content"}}
+<div class="landing-page">
+    <div class="landing-header">
+        <h1>Elicitation Sessions</h1>
+        <form method="POST" action="/api/sessions">
+            <input type="hidden" name="persona" value="trusted_advisor">
+            <button type="submit" class="btn btn-new-session">New Session</button>
+        </form>
+    </div>
+    {{if .Sessions}}
+    <div class="session-list">
+        {{range .Sessions}}
+        <a href="/chat/{{.ID}}" class="session-entry">
+            <span class="session-name">{{.Name}}</span>
+            <span class="persona-badge">{{.Persona.DisplayName}}</span>
+            <span class="session-date">{{.CreatedAt.Format "2006-01-02 15:04"}}</span>
+        </a>
+        {{end}}
+    </div>
+    {{else}}
+    <div class="empty-state">
+        <p>No sessions yet. Create one to get started.</p>
+    </div>
+    {{end}}
+</div>
+{{end}}

@@ -728,3 +728,91 @@ func TestEngineSynthesize_LLMFailurePreservesSessionState(t *testing.T) {
 		}
 	}
 }
+
+// ============================================================================
+// Task 9.2: Property test — Persona switch uses new system prompt
+// Feature: chat-ui, Property 5: Persona switch uses new system prompt
+// Validates: Requirements 5.5
+// ============================================================================
+
+func TestPersonaSwitchUsesNewPrompt(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		personas := []PersonaType{PersonaSocraticBA, PersonaHostileSA, PersonaTrustedAdv}
+
+		// Pick an initial persona and a different target persona
+		initialIdx := rapid.IntRange(0, len(personas)-1).Draw(t, "initialPersonaIdx")
+		initialPersona := personas[initialIdx]
+
+		// Pick a different persona for the switch
+		targetIdx := rapid.IntRange(0, len(personas)-2).Draw(t, "targetPersonaIdx")
+		if targetIdx >= initialIdx {
+			targetIdx++
+		}
+		targetPersona := personas[targetIdx]
+
+		// Generate some pre-switch turns (0-10)
+		preSwitchTurns := rapid.IntRange(0, 10).Draw(t, "preSwitchTurns")
+
+		// Build mock responses: preSwitchTurns + 1 post-switch turn
+		totalTurns := preSwitchTurns + 1
+		responses := make([]*anthropic.Message, totalTurns)
+		for i := 0; i < totalTurns; i++ {
+			responses[i] = makeTextResponse(fmt.Sprintf("response_%d", i))
+		}
+
+		mock := &mockMessageCreator{responses: responses}
+		loader := newTestPersonaLoader()
+		engine := NewEngine(mock, newTestConfig(), loader)
+
+		session := &Session{
+			ID:        "switch-sess",
+			Persona:   initialPersona,
+			Messages:  []ChatMessage{},
+			CreatedAt: time.Now(),
+		}
+
+		// Execute pre-switch turns with initial persona
+		for i := 0; i < preSwitchTurns; i++ {
+			msg := rapid.StringMatching(`[a-zA-Z0-9 ]{1,30}`).Draw(t, fmt.Sprintf("preMsg_%d", i))
+			_, err := engine.Chat(context.Background(), session, msg)
+			if err != nil {
+				t.Fatalf("pre-switch turn %d: unexpected error: %v", i, err)
+			}
+		}
+
+		// Switch persona (simulating what HandleUpdatePersona does)
+		session.Persona = targetPersona
+
+		// Execute one post-switch turn
+		postMsg := rapid.StringMatching(`[a-zA-Z0-9 ]{1,30}`).Draw(t, "postMsg")
+		_, err := engine.Chat(context.Background(), session, postMsg)
+		if err != nil {
+			t.Fatalf("post-switch turn: unexpected error: %v", err)
+		}
+
+		// Property: the last LLM call (post-switch) must use the target persona's system prompt
+		expectedPrompt := loader.prompts[targetPersona]
+		lastCall := mock.calls[len(mock.calls)-1]
+
+		if len(lastCall.System) == 0 {
+			t.Fatal("post-switch call: no system prompt set")
+		}
+		if lastCall.System[0].Text != expectedPrompt {
+			t.Fatalf("post-switch call: expected system prompt %q (for %s), got %q",
+				expectedPrompt, targetPersona, lastCall.System[0].Text)
+		}
+
+		// Also verify pre-switch calls used the initial persona's prompt
+		initialPrompt := loader.prompts[initialPersona]
+		for i := 0; i < preSwitchTurns; i++ {
+			call := mock.calls[i]
+			if len(call.System) == 0 {
+				t.Fatalf("pre-switch call %d: no system prompt set", i)
+			}
+			if call.System[0].Text != initialPrompt {
+				t.Fatalf("pre-switch call %d: expected system prompt %q (for %s), got %q",
+					i, initialPrompt, initialPersona, call.System[0].Text)
+			}
+		}
+	})
+}

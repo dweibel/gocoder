@@ -65,6 +65,6 @@ func NewCodingAgent(cfg AgentConfig, tools []ToolDefinition) CodingAgent {
 	return &agent{
 		config:   cfg,
 		tools:    tools,
-		messages: NewOpenRouterClient(cfg),
+		messages: NewMessageCreator(cfg),
 	}
 }

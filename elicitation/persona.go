@@ -12,6 +12,22 @@ type PersonaLoader interface {
 	Load(persona PersonaType) (string, error)
 }
 
+// PersonaDisplayNames maps each PersonaType to its human-readable display name.
+var PersonaDisplayNames = map[PersonaType]string{
+	PersonaSocraticBA: "Socratic Business Analyst",
+	PersonaHostileSA:  "Hostile Systems Architect",
+	PersonaTrustedAdv: "Trusted Advisor",
+}
+
+// DisplayName returns the human-readable name for a PersonaType.
+// Returns the raw string value if the persona is not in the map.
+func (p PersonaType) DisplayName() string {
+	if name, ok := PersonaDisplayNames[p]; ok {
+		return name
+	}
+	return string(p)
+}
+
 // personaFileMap maps each PersonaType to its template filename.
 var personaFileMap = map[PersonaType]string{
 	PersonaSocraticBA: "socratic_ba.tmpl",

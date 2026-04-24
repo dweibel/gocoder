@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -577,4 +578,466 @@ func TestMalformedHTTPError(t *testing.T) {
 			t.Fatalf("expected 'error' field in response for payload %q, got: %v", payload, resp)
 		}
 	})
+}
+
+// ============================================================================
+// Task 5.4: Property test — Session list sorted descending by creation time
+// Feature: chat-ui, Property 3: Session list sorted descending by creation time
+// Validates: Requirements 2.4
+// ============================================================================
+
+func TestSessionListSortedDescending(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		sessions := elicitation.NewInMemorySessionStore()
+		savePath := t.TempDir()
+		h := NewHandler(
+			&mockElicitor{},
+			sessions,
+			newMockStore(),
+			&mockMarkdownCodec{},
+			savePath,
+		)
+
+		// Generate 1–15 sessions with random CreatedAt timestamps
+		n := rapid.IntRange(1, 15).Draw(rt, "numSessions")
+		type sessionInfo struct {
+			id        string
+			createdAt time.Time
+		}
+		created := make([]sessionInfo, 0, n)
+
+		baseTime := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+		for i := 0; i < n; i++ {
+			sess := sessions.Create(elicitation.PersonaTrustedAdv)
+			// Assign a random CreatedAt by adding random seconds
+			offsetSec := rapid.Int64Range(0, 5*365*24*3600).Draw(rt, fmt.Sprintf("offset_%d", i))
+			sess.CreatedAt = baseTime.Add(time.Duration(offsetSec) * time.Second)
+			created = append(created, sessionInfo{id: sess.ID, createdAt: sess.CreatedAt})
+		}
+
+		// Call HandleListSessions (JSON API) to check sort order
+		req := httptest.NewRequest("GET", "/api/sessions", nil)
+		w := httptest.NewRecorder()
+		mux := setupMux(h)
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			rt.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+
+		var summaries []elicitation.SessionSummary
+		if err := json.NewDecoder(w.Body).Decode(&summaries); err != nil {
+			rt.Fatalf("failed to decode response: %v", err)
+		}
+
+		// All sessions must appear
+		if len(summaries) != n {
+			rt.Fatalf("expected %d sessions, got %d", n, len(summaries))
+		}
+
+		// Now test the landing page handler which sorts descending
+		tmpls, err := ParseTemplates("templates")
+		if err != nil {
+			rt.Fatalf("failed to parse templates: %v", err)
+		}
+		h.SetTemplates(tmpls)
+
+		req2 := httptest.NewRequest("GET", "/", nil)
+		w2 := httptest.NewRecorder()
+		mux2 := setupMux(h)
+		mux2.ServeHTTP(w2, req2)
+
+		if w2.Code != http.StatusOK {
+			rt.Fatalf("expected 200 for landing page, got %d: %s", w2.Code, w2.Body.String())
+		}
+
+		body := w2.Body.String()
+
+		// Verify all session IDs appear in the HTML
+		for _, s := range created {
+			if !strings.Contains(body, s.id) {
+				rt.Fatalf("session %s missing from landing page", s.id)
+			}
+		}
+
+		// Verify descending order: extract session ID positions in the HTML
+		// Each session appears as /chat/{id}, so find their positions
+		positions := make([]int, 0, n)
+		idByPos := make(map[int]string)
+		for _, s := range created {
+			pos := strings.Index(body, "/chat/"+s.id)
+			if pos < 0 {
+				rt.Fatalf("session link /chat/%s not found in landing page", s.id)
+			}
+			positions = append(positions, pos)
+			idByPos[pos] = s.id
+		}
+
+		// Build a map from session ID to CreatedAt
+		createdAtByID := make(map[string]time.Time)
+		for _, s := range created {
+			createdAtByID[s.id] = s.createdAt
+		}
+
+		// Sort positions to get the order they appear in HTML
+		sort.Ints(positions)
+
+		// Verify that sessions appear in descending CreatedAt order
+		for i := 1; i < len(positions); i++ {
+			prevID := idByPos[positions[i-1]]
+			currID := idByPos[positions[i]]
+			if createdAtByID[prevID].Before(createdAtByID[currID]) {
+				rt.Fatalf("sessions not sorted descending: %s (created %v) appears before %s (created %v)",
+					prevID, createdAtByID[prevID], currID, createdAtByID[currID])
+			}
+		}
+	})
+}
+
+// ============================================================================
+// Task 5.5: Property test — Persona switch preserves history and appends notification
+// Feature: chat-ui, Property 4: Persona switch preserves history and appends notification
+// Validates: Requirements 5.4, 5.6, 5.7
+// ============================================================================
+
+func TestPersonaSwitchPreservesHistoryAndNotifies(t *testing.T) {
+	validPersonaTypes := []elicitation.PersonaType{
+		elicitation.PersonaSocraticBA,
+		elicitation.PersonaHostileSA,
+		elicitation.PersonaTrustedAdv,
+	}
+
+	rapid.Check(t, func(rt *rapid.T) {
+		sessions := elicitation.NewInMemorySessionStore()
+		savePath := t.TempDir()
+		h := NewHandler(
+			&mockElicitor{},
+			sessions,
+			newMockStore(),
+			&mockMarkdownCodec{},
+			savePath,
+		)
+		mux := setupMux(h)
+
+		// Pick a random initial persona
+		initialIdx := rapid.IntRange(0, len(validPersonaTypes)-1).Draw(rt, "initialPersona")
+		initialPersona := validPersonaTypes[initialIdx]
+
+		sess := sessions.Create(initialPersona)
+
+		// Generate 0–20 random messages
+		numMessages := rapid.IntRange(0, 20).Draw(rt, "numMessages")
+		for i := 0; i < numMessages; i++ {
+			role := rapid.SampledFrom([]string{"user", "assistant"}).Draw(rt, fmt.Sprintf("role_%d", i))
+			content := rapid.StringMatching(`[a-zA-Z0-9 ]{1,50}`).Draw(rt, fmt.Sprintf("content_%d", i))
+			sess.Messages = append(sess.Messages, elicitation.ChatMessage{
+				Role:    role,
+				Content: content,
+				SentAt:  time.Now(),
+			})
+		}
+
+		// Snapshot original messages
+		originalMessages := make([]elicitation.ChatMessage, len(sess.Messages))
+		copy(originalMessages, sess.Messages)
+
+		// Pick a target persona different from the current one
+		var targetPersona elicitation.PersonaType
+		for {
+			targetIdx := rapid.IntRange(0, len(validPersonaTypes)-1).Draw(rt, "targetPersona")
+			targetPersona = validPersonaTypes[targetIdx]
+			if targetPersona != initialPersona {
+				break
+			}
+		}
+
+		// Call HandleUpdatePersona
+		body := fmt.Sprintf(`{"persona": %q}`, string(targetPersona))
+		req := httptest.NewRequest("PUT", "/api/sessions/"+sess.ID+"/persona", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		if w.Code != http.StatusOK {
+			rt.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+		}
+
+		// Verify response contains persona and display_name
+		var resp map[string]string
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			rt.Fatalf("failed to decode response: %v", err)
+		}
+		if resp["persona"] != string(targetPersona) {
+			rt.Fatalf("expected persona %q, got %q", targetPersona, resp["persona"])
+		}
+		expectedDisplayName := targetPersona.DisplayName()
+		if resp["display_name"] != expectedDisplayName {
+			rt.Fatalf("expected display_name %q, got %q", expectedDisplayName, resp["display_name"])
+		}
+
+		// Property (a): session.Persona updated
+		updatedSess, err := sessions.Get(sess.ID)
+		if err != nil {
+			rt.Fatalf("failed to get session: %v", err)
+		}
+		if updatedSess.Persona != targetPersona {
+			rt.Fatalf("expected session persona %q, got %q", targetPersona, updatedSess.Persona)
+		}
+
+		// Property (b): first N messages unchanged
+		if len(updatedSess.Messages) != numMessages+1 {
+			rt.Fatalf("expected %d messages, got %d", numMessages+1, len(updatedSess.Messages))
+		}
+		for i := 0; i < numMessages; i++ {
+			if updatedSess.Messages[i].Role != originalMessages[i].Role {
+				rt.Fatalf("message %d role changed: %q -> %q", i, originalMessages[i].Role, updatedSess.Messages[i].Role)
+			}
+			if updatedSess.Messages[i].Content != originalMessages[i].Content {
+				rt.Fatalf("message %d content changed", i)
+			}
+		}
+
+		// Property (c): message N+1 is system notification with new persona display name
+		notification := updatedSess.Messages[numMessages]
+		if notification.Role != "system" {
+			rt.Fatalf("expected notification role 'system', got %q", notification.Role)
+		}
+		if !strings.Contains(notification.Content, expectedDisplayName) {
+			rt.Fatalf("expected notification to contain %q, got %q", expectedDisplayName, notification.Content)
+		}
+	})
+}
+
+// ============================================================================
+// Task 5.6: Property test — Invalid persona identifier rejected
+// Feature: chat-ui, Property 7: Invalid persona identifier rejected
+// Validates: Requirements 8.3
+// ============================================================================
+
+func TestInvalidPersonaRejected(t *testing.T) {
+	validPersonas := map[string]bool{
+		"socratic_business_analyst": true,
+		"hostile_systems_architect": true,
+		"trusted_advisor":           true,
+	}
+
+	rapid.Check(t, func(rt *rapid.T) {
+		sessions := elicitation.NewInMemorySessionStore()
+		savePath := t.TempDir()
+		h := NewHandler(
+			&mockElicitor{},
+			sessions,
+			newMockStore(),
+			&mockMarkdownCodec{},
+			savePath,
+		)
+		mux := setupMux(h)
+
+		sess := sessions.Create(elicitation.PersonaTrustedAdv)
+
+		// Generate a random string that is NOT one of the three valid personas
+		persona := rapid.StringMatching(`[a-zA-Z0-9_]{1,50}`).Draw(rt, "invalidPersona")
+		if validPersonas[persona] {
+			// If we accidentally generated a valid one, mutate it
+			persona = persona + "_invalid"
+		}
+
+		body := fmt.Sprintf(`{"persona": %q}`, persona)
+		req := httptest.NewRequest("PUT", "/api/sessions/"+sess.ID+"/persona", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+
+		// Property: HTTP 400
+		if w.Code != http.StatusBadRequest {
+			rt.Fatalf("expected 400 for invalid persona %q, got %d: %s", persona, w.Code, w.Body.String())
+		}
+
+		// Property: JSON error body with "error" field
+		var resp map[string]interface{}
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			rt.Fatalf("expected valid JSON error response for persona %q, got: %s", persona, w.Body.String())
+		}
+		if _, ok := resp["error"]; !ok {
+			rt.Fatalf("expected 'error' field in response for persona %q, got: %v", persona, resp)
+		}
+	})
+}
+
+// ============================================================================
+// Task 5.7: Unit tests for new handlers
+// Requirements: 2.6, 2.7, 7.3, 8.4, 9.4, 10.1, 10.2
+// ============================================================================
+
+func TestLandingPageEmptyState(t *testing.T) {
+	h, _ := newTestHandlerWithTemplates(t)
+	mux := setupMux(h)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "No sessions yet") {
+		t.Fatalf("expected empty-state message, got: %s", body)
+	}
+}
+
+func TestLandingPageSessionLinks(t *testing.T) {
+	h, sessions := newTestHandlerWithTemplates(t)
+	mux := setupMux(h)
+
+	s1 := sessions.Create(elicitation.PersonaTrustedAdv)
+	s2 := sessions.Create(elicitation.PersonaSocraticBA)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "/chat/"+s1.ID) {
+		t.Fatalf("expected link to /chat/%s in landing page", s1.ID)
+	}
+	if !strings.Contains(body, "/chat/"+s2.ID) {
+		t.Fatalf("expected link to /chat/%s in landing page", s2.ID)
+	}
+}
+
+func TestPersonaSwitchNotFoundSession(t *testing.T) {
+	h, _ := newTestHandler(t)
+	mux := setupMux(h)
+
+	body := `{"persona": "trusted_advisor"}`
+	req := httptest.NewRequest("PUT", "/api/sessions/nonexistent-id/persona", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("expected JSON error response, got: %s", w.Body.String())
+	}
+	if _, ok := resp["error"]; !ok {
+		t.Fatal("expected 'error' field in JSON response")
+	}
+}
+
+func TestNameUpdateNotFoundSession(t *testing.T) {
+	h, _ := newTestHandler(t)
+	mux := setupMux(h)
+
+	body := `{"name": "New Name"}`
+	req := httptest.NewRequest("PUT", "/api/sessions/nonexistent-id/name", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("expected JSON error response, got: %s", w.Body.String())
+	}
+	if _, ok := resp["error"]; !ok {
+		t.Fatal("expected 'error' field in JSON response")
+	}
+}
+
+func TestEmptySessionListAPI(t *testing.T) {
+	h, _ := newTestHandler(t)
+	mux := setupMux(h)
+
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp []interface{}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("expected JSON array, got: %s", w.Body.String())
+	}
+	if len(resp) != 0 {
+		t.Fatalf("expected empty array, got %d elements", len(resp))
+	}
+}
+
+func TestSessionSummaryIncludesAllFields(t *testing.T) {
+	h, sessions := newTestHandler(t)
+	mux := setupMux(h)
+
+	sess := sessions.Create(elicitation.PersonaSocraticBA)
+	sess.Name = "Test Session"
+
+	req := httptest.NewRequest("GET", "/api/sessions", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var summaries []map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&summaries); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if len(summaries) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(summaries))
+	}
+
+	s := summaries[0]
+	requiredFields := []string{"id", "name", "persona", "message_count", "created_at"}
+	for _, field := range requiredFields {
+		if _, ok := s[field]; !ok {
+			t.Fatalf("expected field %q in session summary, got: %v", field, s)
+		}
+	}
+
+	if s["id"] != sess.ID {
+		t.Fatalf("expected id %q, got %q", sess.ID, s["id"])
+	}
+	if s["persona"] != string(elicitation.PersonaSocraticBA) {
+		t.Fatalf("expected persona %q, got %q", elicitation.PersonaSocraticBA, s["persona"])
+	}
+}
+
+func TestChatPageShowsSessionNameAndPersona(t *testing.T) {
+	h, sessions := newTestHandlerWithTemplates(t)
+	mux := setupMux(h)
+
+	sess := sessions.Create(elicitation.PersonaSocraticBA)
+	sess.Name = "My Feature Discussion"
+
+	req := httptest.NewRequest("GET", "/chat/"+sess.ID, nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, "My Feature Discussion") {
+		t.Fatalf("expected session name in chat page HTML, got: %s", body)
+	}
+	if !strings.Contains(body, "Socratic Business Analyst") {
+		t.Fatalf("expected persona display name in chat page HTML, got: %s", body)
+	}
 }

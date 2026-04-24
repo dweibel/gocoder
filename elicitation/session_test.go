@@ -2,6 +2,7 @@ package elicitation
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"pgregory.net/rapid"
@@ -242,4 +243,85 @@ func TestNonexistentSessionError(t *testing.T) {
 			t.Fatalf("expected ErrSessionNotFound, got: %v", err)
 		}
 	})
+}
+
+// ============================================================================
+// Task 1.4: Property test — Session name store round-trip
+// Feature: chat-ui, Property 1: Session name store round-trip
+// Validates: Requirements 1.3, 1.4
+// ============================================================================
+
+func TestSessionNameStoreRoundTrip(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Generate a random valid name: 1–200 chars of various UTF-8 characters
+		name := rapid.StringMatching(`[A-Za-z0-9 _\-\x{00C0}-\x{00FF}\x{0400}-\x{04FF}]{1,200}`).Draw(t, "name")
+
+		store := NewInMemorySessionStore()
+		sess := store.Create(PersonaTrustedAdv)
+
+		// Set the name directly on the session
+		sess.Name = name
+
+		// Retrieve by ID and assert name matches
+		retrieved, err := store.Get(sess.ID)
+		if err != nil {
+			t.Fatalf("Get returned error: %v", err)
+		}
+		if retrieved.Name != name {
+			t.Fatalf("name mismatch: set %q, got %q", name, retrieved.Name)
+		}
+	})
+}
+
+// ============================================================================
+// Task 1.5: Property test — Session name validation
+// Feature: chat-ui, Property 2: Session name validation
+// Validates: Requirements 1.6, 9.3
+// ============================================================================
+
+func TestSessionNameValidation(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		// Pick a category: empty, whitespace-only, valid, or too long
+		category := rapid.IntRange(0, 3).Draw(t, "category")
+
+		var name string
+		switch category {
+		case 0: // empty string
+			name = ""
+		case 1: // whitespace-only (1–10 whitespace chars)
+			n := rapid.IntRange(1, 10).Draw(t, "wsLen")
+			name = strings.Repeat(" ", n)
+		case 2: // valid: 1–200 chars with at least one non-whitespace
+			name = rapid.StringMatching(`[A-Za-z0-9]{1,200}`).Draw(t, "validName")
+		case 3: // too long: 201–500 chars
+			name = rapid.StringMatching(`[a-z]{201,500}`).Draw(t, "longName")
+		}
+
+		err := ValidateSessionName(name)
+
+		// Determine expected validity
+		trimmed := strings.TrimSpace(name)
+		shouldBeValid := trimmed != "" && len(trimmed) <= 200
+
+		if shouldBeValid && err != nil {
+			t.Fatalf("expected valid name %q (trimmed=%q) to pass, got error: %v", name, trimmed, err)
+		}
+		if !shouldBeValid && err == nil {
+			t.Fatalf("expected invalid name %q (trimmed=%q) to fail, got nil error", name, trimmed)
+		}
+	})
+}
+
+// ============================================================================
+// Task 1.6: Unit test — Default session name
+// Requirements: 1.2
+// ============================================================================
+
+func TestDefaultSessionName(t *testing.T) {
+	store := NewInMemorySessionStore()
+	sess := store.Create(PersonaTrustedAdv)
+
+	if sess.Name != "Untitled Session" {
+		t.Fatalf("expected default name %q, got %q", "Untitled Session", sess.Name)
+	}
 }

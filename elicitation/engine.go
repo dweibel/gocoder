@@ -106,9 +106,10 @@ func (e *Engine) Chat(ctx context.Context, session *Session, userMessage string)
 		SentAt:  now,
 	}
 	assistantMsg := ChatMessage{
-		Role:    "assistant",
-		Content: responseText,
-		SentAt:  now,
+		Role:        "assistant",
+		Content:     responseText,
+		PersonaName: session.Persona.DisplayName(),
+		SentAt:      now,
 	}
 	session.Messages = append(session.Messages, userMsg, assistantMsg)
 
