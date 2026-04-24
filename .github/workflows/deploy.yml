@@ -24,75 +24,39 @@ jobs:
 
   deploy:
     needs: test
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure SSH
+      - name: Build container image
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.OCI_SSH_KEY }}" > ~/.ssh/oci_deploy
-          chmod 600 ~/.ssh/oci_deploy
-          ssh-keyscan -H ${{ secrets.OCI_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
+          podman build --build-arg BUILD_TARGET=./cmd/server \
+            -t gocoder:latest -f Containerfile .
 
-      - name: Deploy source and rebuild on OCI
-        timeout-minutes: 30
-        env:
-          SSH_OPTS: -i ~/.ssh/oci_deploy -o StrictHostKeyChecking=no -o ConnectTimeout=30 -v
-          SSH_TARGET: opc@${{ secrets.OCI_HOST }}
-          DEPLOY_DIR: ~/deploy/gocoder
+      - name: Deploy container
         run: |
-          echo "Testing SSH connection to $SSH_TARGET..."
-          # Retry logic with exponential backoff
-          for attempt in 1 2 3; do
-            if ssh $SSH_OPTS $SSH_TARGET echo "Connection successful"; then
-              break
-            fi
-            if [ $attempt -lt 3 ]; then
-              echo "Connection attempt $attempt failed, retrying in 10 seconds..."
-              sleep 10
-            else
-              echo "Failed to connect after 3 attempts"
-              exit 1
-            fi
-          done
+          # Stop and remove existing container
+          podman stop gocoder-ardp 2>/dev/null || true
+          podman rm gocoder-ardp 2>/dev/null || true
 
-          # Package source (exclude .git and test artifacts)
-          tar czf /tmp/gocoder-src.tar.gz --exclude='.git' --exclude='*.tar' .
+          podman run -d \
+            --name gocoder-ardp \
+            --restart=on-failure \
+            --secret OPENROUTER_API_KEY,type=env \
+            --secret OPENROUTER_MODEL,type=env \
+            --secret OPENROUTER_BASE_URL,type=env \
+            --secret OPENROUTER_MAX_TOKENS,type=env \
+            --secret OPENROUTER_TIMEOUT,type=env \
+            -v ~/deploy/gocoder/projects/ardp/workspace:/workspace:Z \
+            -p 8080:8080 \
+            gocoder:latest gocoder
 
-          # Transfer to OCI
-          scp $SSH_OPTS /tmp/gocoder-src.tar.gz $SSH_TARGET:$DEPLOY_DIR/build/gocoder-src.tar.gz
-
-          # Extract, build, and restart on OCI
-          ssh $SSH_OPTS $SSH_TARGET bash -s <<'REMOTE'
-            set -euo pipefail
-            cd ~/deploy/gocoder/build
-            rm -rf src && mkdir src
-            tar xzf gocoder-src.tar.gz -C src
-            cd src
-
-            # Build container image natively on ARM64
-            podman build --build-arg BUILD_TARGET=./cmd/server \
-              -t gocoder:latest -f Containerfile .
-
-            # Restart the server container
-            podman stop gocoder-ardp 2>/dev/null || true
-            podman rm gocoder-ardp 2>/dev/null || true
-
-            podman run -d \
-              --name gocoder-ardp \
-              --restart=on-failure \
-              --secret OPENROUTER_API_KEY,type=env \
-              --secret OPENROUTER_MODEL,type=env \
-              --secret OPENROUTER_BASE_URL,type=env \
-              --secret OPENROUTER_MAX_TOKENS,type=env \
-              --secret OPENROUTER_TIMEOUT,type=env \
-              -v ~/deploy/gocoder/projects/ardp/workspace:/workspace:Z \
-              -p 8080:8080 \
-              gocoder:latest gocoder
-
-            # Verify health
-            sleep 3
-            curl -sf http://localhost:8080/health || { podman logs gocoder-ardp; exit 1; }
-            echo "Deploy complete"
-          REMOTE
+      - name: Verify health
+        run: |
+          sleep 3
+          curl -sf http://localhost:8080/health || {
+            podman logs gocoder-ardp
+            exit 1
+          }
+          echo "Deploy complete"
