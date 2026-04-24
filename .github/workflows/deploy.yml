@@ -33,7 +33,7 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.OCI_SSH_KEY }}" > ~/.ssh/oci_deploy
           chmod 600 ~/.ssh/oci_deploy
-          ssh-keyscan -H ${{ secrets.OCI_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+          ssh-keyscan -H ${{ secrets.OCI_HOST }} >> ~/.ssh/known_hosts 2>/dev/null || true
 
       - name: Deploy source and rebuild on OCI
         env:
