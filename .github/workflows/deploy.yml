@@ -7,9 +7,6 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: gocoder
     env:
       GONOSUMCHECK: github.com/ardp/coding-agent
       GONOSUMDB: github.com/ardp/coding-agent

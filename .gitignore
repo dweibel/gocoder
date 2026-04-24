@@ -15,6 +15,7 @@ docs/
 *.so
 *.dylib
 /agent
+!/agent/
 /coding-agent
 
 # Go test binary
